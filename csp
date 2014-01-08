@@ -1,0 +1,345 @@
+#!/usr/bin/perl
+
+use lib './blib/lib';
+
+use CSP;
+use Getopt::Long;
+
+sub list_csp
+  {
+    my $dir = shift;
+    
+    opendir CSPD,"$dir/csp";
+    my @dirs = readdir CSPD;
+    closedir CSPD;
+    grep /^[^.]/,@dirs;
+  }
+    
+$usage=<<EOU;
+
+Usage:  $0 <ca name> create
+
+        $0 <ca name> delete
+
+        $0 <ca name> init
+              [--crtfile=<PEM certificate>]
+
+        $0 <ca name> init
+              [--keysize=<size>]
+              [--keypass=<ca private key password>]
+              [--keyfile=<private key file>]
+              [--csrfile=<output PKCS10 request>]
+              [--days=<ca certificate validity (days)>]
+              [--email=<subjectAltName email>]
+              [--url=<subjectAltName url>]
+              [--crldays=<days to first CRL update>]
+              [--crlhours=<hours to first CRL update>]
+              [--digest=<sha1*|md5|md2|mdc2>]
+              [--verbose]+
+              <CA Subject (X509 Name)>
+
+       $0 <ca name> request 
+              [--keysize=<size>]
+              [--keypass=<subject private key password>]
+              [--keyfile=<private key file>]
+              [--type=<*user|server|objsign|ca>]
+              [--csrfile=<output pkcs10 request file>]
+              [--noconfirm] 
+              [--verbose]+
+              [--digest=<sha1*|md5|md2|mdc2>]
+              {<X509 Name>|<RFC822 address>|<DNS name>}
+
+       $0 <ca name> issue
+              [--keysize=<size> ]
+              [--keypass=<subject private key password>]
+              [--keyfile=<private key file>]
+              [--noconfirm]
+              [--verbose]+
+              [--type=<*user|server|objsign|ca>]
+              [--days=<certificate validity (days)>]
+              [--capass=<CA private key password>]
+              [--email=<subjectAltName email>]
+              [--url=<subjectAltName url>]
+              [--ip=<subjectAltName ip address>]
+              [--dns=<subjectAltName dns name>]
+              [--digest=<sha1*|md5|md2|mdc2>]
+              {<X509 Name>|<RFC822 address>|<DNS name>}
+
+       $0 <ca name> sign
+              [--type=<*user|server|objsign|ca>]
+              [--capass=<CA private key password>]
+              [--csrfile=<input PKCS10 request>]
+              [--email=<subjectAltName email>]
+              [--url=<subjectAltName url>]
+              [--ip=<subjectAltName ip address>]
+              [--dns=<subjectAltName dns name>]
+              [--digest=<sha1*|md5|md2|mdc2>]
+              [--verbose]+
+
+       $0 <ca name> p12
+              [--p12pass=<pkcs12 export password>]
+              [--keypass=<private key password>]
+              [--verbose]+
+              <serial>
+
+       $0 <ca name> revoke <serial>
+              [--noconfirm] [--quiet[=<level>]]
+
+       $0 <ca name> gencrl
+              [--crldays=<days to next CRL update>]
+              [--crlhours=<hours to next CRL update>]
+              [--digest=<sha1*|md5|md2|mdc2>]
+              [--verbose]+
+
+       $0 <ca name> genpublic
+              [--export=<export directory>]
+              [--verbose]+
+
+       $0 <ca name> list
+              [--serial=<serial>]
+              [--all]
+              [--xinfo]
+              [--contents]
+              [--verbose]+
+
+       $0 --list
+
+       $0 --bundle
+
+EOU
+
+die $usage unless @ARGV > 0;
+
+my $name = shift @ARGV;
+
+warn "Warning: \$CSPHOME unset. This may prevent CSP from working properly.\n"
+  unless $ENV{CSPHOME};
+
+die "Panic: \$OPENSSL does not point to a executable.\n"
+  unless -x $ENV{OPENSSL};
+
+my $home = $ENV{CSPHOME} || 'ca';
+
+mkdir "$home/csp",00755 unless -d "$home/csp";
+
+$name eq '--list' and
+  do 
+  {
+    map { print "$_\n"; } &list_csp($home);
+  },exit;
+
+$name eq '--bundle' and
+  do
+  {
+    my @certs = map { "$home/csp/$_/ca.crt" } list_csp($home);
+    CSP->caBundle({bundle=>"$home/ca-bundle.crt"},@certs);
+  },exit;
+
+die $usage unless @ARGV > 0;
+
+my $cmd  = shift @ARGV;
+
+my $csp = CSP->new($home,$name);
+
+my %args = (keysize => 1024,
+	    days    => 365,
+	    crldays => 30,
+	    crlhours=> 0,
+	    type    => 'user',
+	    verbose => 0,
+	    confirm => 1,
+	    xinfo   => 0,
+	    contents=> 0,
+	    digest  => 'sha1',
+	    all     => 0,
+	    capass  => '');
+
+my @args = ("type=s",
+	    "all!",
+	    "verbose+",
+	    "confirm!",
+	    "keysize=i",
+	    "days=i",
+	    "xinfo!",
+	    "contents!",
+	    "serial=i",
+	    "keypass=s",
+	    "keyfile=s",
+	    "csrfile=s",
+	    "crtfile=s",
+	    "email=s",
+	    "ip=s",
+	    "dns=s",
+	    "export:s",
+	    "digest=s",
+	    "url=s",
+	    "capass=s");
+
+SWITCH: 
+{
+  ##
+  ## Dump (text form) the CA certificate
+  ## 
+
+  $cmd eq 'dump' and
+    do
+      {
+	GetOptions(\%args,@args) or die $usage;
+	
+	$csp->dump(\%args);
+      },last SWITCH;
+
+  ## 
+  ## Drop the CA
+  ##
+
+  $cmd eq 'delete' and 
+    do 
+      {
+	GetOptions(\%args,@args) or die $usage;
+	
+	$csp->delete(\%args);
+      },last SWITCH;
+  
+  ## 
+  ## Initialize a ca using a self-signed certificate.
+  ##
+
+  $cmd eq 'create' and 
+    do
+      {
+	GetOptions(\%args,@args) or die $usage;
+	
+	$csp->create(\%args);
+      },last SWITCH;
+  
+  ## 
+  ## Initialize a ca using a self-signed certificate.
+  ##
+
+  $cmd eq 'init' and 
+    do 
+      {
+	$args{keysize} = 2048;
+	$args{type} = 'root';
+	
+	GetOptions(\%args,@args) or die $usage;
+	
+	die $usage unless @ARGV == 1 or $args{crtfile};
+	
+	$args{dn} = $csp->getDN(shift @ARGV,\%args) if @ARGV;
+	$csp->init(\%args);
+      },last SWITCH;
+
+  ##
+  ## Request a certificate of a specific type
+  ##
+  
+  $cmd eq 'request' and
+    do
+      {
+	GetOptions(\%args,@args) or die $usage;
+	
+	die $usage unless @ARGV == 1;
+	
+	$args{dn} = $csp->getDN(shift @ARGV,\%args);
+	
+	$csp->request(\%args);
+      },last SWITCH;
+
+  ##
+  ## Create a pkcs12 object for a given serial
+  ## 
+
+  $cmd eq 'p12' and
+    do
+      {
+	GetOptions(\%args,@args) or die $usage;
+	
+	die $usage unless @ARGV == 1;
+	$args{serial} = $ARGV[0];
+	
+	$csp->export_pkcs12(\%args);
+      },last SWITCH;
+
+  ##
+  ## Issue a certificate of a specific type
+  ##
+
+  $cmd eq 'issue' and
+    do
+      {
+	GetOptions(\%args,@args) or die $usage;
+	
+	die $usage unless @ARGV == 1;
+	
+	$args{dn} = $csp->getDN(shift @ARGV,\%args);
+	
+	$csp->issue(\%args);
+      },last SWITCH;
+  
+  ##
+  ## Sign a certificate request (PKCS10 file)
+  ##
+
+  $cmd eq 'sign' and
+    do
+      {
+	GetOptions(\%args,@args) or die $usage;
+	
+	$csp->issue(\%args);
+      },last SWITCH;
+  
+  ##
+  ## Revoke a certificate given by serial
+  ##
+
+  $cmd eq 'revoke' and
+    do
+      {
+	GetOptions(\%args,@args) or die $usage;
+	
+	die $usage unless @ARGV == 1 || $args{serial};
+	
+	$args{serial} = shift unless $args{serial};
+	
+	$csp->revoke(\%args);
+      },last SWITCH;
+
+  ##
+  ## Generate a new crl
+  ##
+
+  $cmd eq 'gencrl' and
+    do
+      {
+	GetOptions(\%args,@args) or die $usage;
+	
+	$csp->gencrl(\%args);
+      },last SWITCH;
+  
+  ##
+  ## Generate public sites (www & ldap)
+  ## 
+
+  ($cmd eq 'genpublic') and
+    do
+      {
+	GetOptions(\%args,@args) or die $usage;
+	
+	$csp->genPublic(\%args);
+      },last SWITCH;
+
+  ##
+  ## List certificates
+  ##
+
+  ($cmd eq 'list' or $cmd eq 'show') and
+    do
+      {
+	GetOptions(\%args,@args) or die $usage;
+	map { $_->dump(); } $csp->list(\%args,'CSP::Entity');
+      },last SWITCH;
+  
+  die $usage;
+}
